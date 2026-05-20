@@ -1,154 +1,219 @@
-# Lemonade Prometheus and Grafana
+# Lemonade Prometheus Testing Setup
 
-This directory contains a minimal Prometheus/Grafana setup for Lemonade Server's built-in `GET /metrics` endpoint.
+This tutorial sets up a local Prometheus and Grafana stack for testing the
+Lemonade Server built-in `/metrics` endpoint.
 
-## Refresh Rate
+The setup assumes Lemonade is running on your host machine at
+`http://localhost:13305`, while Prometheus and Grafana run in Docker.
 
-Lemonade does not push metrics and `/metrics` has no internal refresh timer. The endpoint renders current state whenever it is scraped.
+## Files
 
-Prometheus controls how often Lemonade is polled. Configure this with `scrape_interval` in `prometheus.yml`:
+- `docker-compose.localhost.yml`: starts Prometheus and Grafana
+- `prometheus.localhost.yml`: configures Prometheus to scrape Lemonade on localhost
+- `lemonade-builtin-metrics-dashboard.json`: Grafana dashboard to import
+- `debug_metrics.py`: optional helper for watching raw Lemonade metrics
 
-```yaml
-global:
-  scrape_interval: 10s
-```
+## 1. Start Lemonade
 
-Grafana controls how often dashboard panels query Prometheus. Grafana does not control how often Prometheus scrapes Lemonade.
-
-## Docker Compose DNS
-
-Docker Compose services can reach each other by service name on the Compose network.
-
-Grafana should use this Prometheus data source URL:
+Start your Lemonade instance first. It must be reachable on the host at:
 
 ```text
-http://prometheus:9090
+http://localhost:13305
 ```
 
-For the localhost test config, Prometheus scrapes Lemonade on the host machine at:
-
-```text
-http://host.docker.internal:13305/metrics
-```
-
-The request path is:
-
-```text
-Grafana -> http://prometheus:9090 -> http://host.docker.internal:13305/metrics
-```
-
-## Default Compose Stack
-
-Use `docker-compose.yml` when Lemonade is also running as a service in the same Compose project.
-
-Prometheus target:
-
-```yaml
-scrape_configs:
-  - job_name: 'lemonade'
-    metrics_path: /metrics
-    static_configs:
-      - targets: ['lemonade:13305']
-```
-
-In this mode, the service DNS name is:
-
-```text
-lemonade
-```
-
-## Localhost Test Stack
-
-Use `docker-compose.localhost.yml` when Lemonade is running directly on the host at port `13305` and only Prometheus/Grafana are running in Docker.
-
-Start Prometheus:
+Verify the metrics endpoint from your host:
 
 ```bash
-docker compose -f docker-compose.localhost.yml up -d prometheus
+curl http://localhost:13305/metrics
 ```
 
-Start Grafana too:
+You should see Prometheus-formatted metrics with names that start with
+`lemonade_`, for example:
+
+```text
+lemonade_server_up
+lemonade_loaded_models
+lemonade_cpu_usage_percent
+```
+
+If Lemonade is configured with `LEMONADE_API_KEY`, Prometheus must also be
+configured with a bearer token before scraping will work.
+
+## 2. Start Prometheus and Grafana
+
+From this directory, run:
 
 ```bash
 docker compose -f docker-compose.localhost.yml up -d
 ```
 
-Prometheus target:
+This starts:
 
-```yaml
-scrape_configs:
-  - job_name: 'lemonade-localhost'
-    metrics_path: /metrics
-    static_configs:
-      - targets: ['host.docker.internal:13305']
+- Prometheus at `http://localhost:9090`
+- Grafana at `http://localhost:3000`
+
+Check that both containers are running:
+
+```bash
+docker compose -f docker-compose.localhost.yml ps
 ```
 
-The Compose file includes Linux host gateway support:
+## 3. Verify Prometheus Can Scrape Lemonade
 
-```yaml
-extra_hosts:
-  - "host.docker.internal:host-gateway"
+Open Prometheus:
+
+```text
+http://localhost:9090
 ```
 
-Stop the test stack:
+Go to **Status > Targets**.
+
+The `lemonade-localhost` target should be listed as **UP**. The target URL
+should point to:
+
+```text
+host.docker.internal:13305
+```
+
+Prometheus uses `host.docker.internal` so the Docker container can reach the
+Lemonade process running on your host machine.
+
+Next, go to the Prometheus query page and run:
+
+```promql
+lemonade_server_up
+```
+
+The value should be `1`.
+
+## 4. Log In to Grafana
+
+Open Grafana:
+
+```text
+http://localhost:3000
+```
+
+Use the default local credentials:
+
+```text
+Username: admin
+Password: admin
+```
+
+Grafana may ask you to set a new password. You can set one or skip it for local
+testing.
+
+## 5. Add Prometheus as a Grafana Data Source
+
+In Grafana, open the left navigation and go to:
+
+```text
+Connections > Data sources
+```
+
+Select **Add data source**, then choose **Prometheus**.
+
+Use this URL:
+
+```text
+http://prometheus:9090
+```
+
+Click **Save & test**.
+
+Grafana should report that the Prometheus data source is working.
+
+Use `http://prometheus:9090`, not `http://localhost:9090`, because Grafana is
+running inside Docker and reaches Prometheus by Docker Compose service name.
+
+## 6. Import the Lemonade Dashboard
+
+Open the dashboard import page in Grafana:
+
+```text
+Dashboards > New > Import
+```
+
+Copy the full contents of:
+
+```text
+lemonade-builtin-metrics-dashboard.json
+```
+
+Paste the JSON into the import field, then click **Load**.
+
+When Grafana asks for the Prometheus data source, select the Prometheus data
+source you created in the previous step.
+
+Click **Import**.
+
+## 7. Navigate to the Dashboard
+
+In Grafana, open:
+
+```text
+Dashboards
+```
+
+Select the imported Lemonade dashboard.
+
+Panels should begin showing data after Prometheus has scraped Lemonade. This
+compose setup uses a `1s` scrape interval in `prometheus.localhost.yml`, so new
+data should appear quickly.
+
+If a panel is empty, first verify that the matching metric exists in Prometheus.
+For example:
+
+```promql
+lemonade_loaded_models
+```
+
+Some dashboard panels only show data after you load a model or send requests to
+Lemonade.
+
+## 8. Open Apps in Lemonade and Generate Activity
+
+Open your Lemonade UI and navigate to **Apps**.
+
+Use an app or model flow that sends requests through Lemonade. Then return to
+Grafana and Prometheus to confirm the metrics change.
+
+Useful Prometheus queries for verification:
+
+```promql
+lemonade_server_up
+lemonade_loaded_models
+lemonade_cpu_usage_percent
+lemonade_memory_used_gb
+```
+
+Request and token counters may only change after model traffic is generated.
+
+## 9. Optional: Watch Raw Metrics Locally
+
+You can also watch raw Lemonade metrics from the terminal:
+
+```bash
+python debug_metrics.py
+```
+
+The script polls:
+
+```text
+http://localhost:13305/metrics
+```
+
+## 10. Stop the Stack
+
+When finished, stop Prometheus and Grafana:
 
 ```bash
 docker compose -f docker-compose.localhost.yml down
 ```
 
-## Lemonade Metrics Endpoint
+To remove the saved Prometheus and Grafana volumes as well:
 
-Lemonade exposes metrics at:
-
-```text
-GET /metrics
-HEAD /metrics
+```bash
+docker compose -f docker-compose.localhost.yml down -v
 ```
-
-The endpoint is root-level only. It is not available under `/api/v1`, `/v1`, `/api/v0`, or `/v0`.
-
-If `LEMONADE_API_KEY` is set, Prometheus must send a bearer token. Either `LEMONADE_API_KEY` or `LEMONADE_ADMIN_API_KEY` is accepted.
-
-Example Prometheus config with an API key:
-
-```yaml
-scrape_configs:
-  - job_name: 'lemonade'
-    metrics_path: /metrics
-    authorization:
-      type: Bearer
-      credentials: your-token-here
-    static_configs:
-      - targets: ['host.docker.internal:13305']
-```
-
-## Main Metric Families
-
-- `lemonade_server_up`
-- `lemonade_server_info`
-- `lemonade_loaded_models`
-- `lemonade_model_info`
-- `lemonade_max_loaded_models`
-- `lemonade_model_*` latest per-model telemetry gauges
-- `lemonade_model_decode_token_time_*` latest streaming token interval gauges
-- `lemonade_model_*_total` per-model counters
-- `lemonade_*_total` aggregate counters
-- `lemonade_cpu_usage_percent`
-- `lemonade_memory_used_gb`
-- `lemonade_gpu_usage_percent`
-- `lemonade_vram_used_gb`
-- `lemonade_npu_usage_percent`
-- `lemonade_llamacpp_*` best-effort normalized llama.cpp backend metrics
-
-The built-in dashboard also includes optional panels for AMD GPU exporter metrics inspired by the RFC dashboard in PR #996:
-
-- `amd_gpu_edge_temperature`
-- `amd_gpu_junction_temperature`
-- `amd_gpu_memory_temperature`
-- `amd_gpu_average_package_power`
-- `amd_gpu_used_vram`
-- `amd_gpu_total_vram`
-
-Those panels are empty unless Prometheus is also scraping an exporter that provides those metric families.
-
-See `docs/api/lemonade.md` for the full endpoint contract.
